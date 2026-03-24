@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+---
+
+## 1.1.0
+
 ### Added
 - Pagecord importer (`import_pagecord.php`) — web UI importer for Pagecord exported Markdown files. Drop it in your Pure Blog root, place exported `.md` files in `content/posts/import/`, and visit the URL while logged in. Shows a preview before importing, flags posts with images as drafts (with an option to force-publish), and optionally deletes source files after a successful import. Original script by [David (justdaj)](https://github.com/justdaj).
 

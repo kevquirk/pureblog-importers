@@ -6,6 +6,7 @@ A collection of import tools for [Pure Blog](https://codeberg.org/kevquirk/pureb
 |---|---|---|
 | [`import_wordpress.php`](#wordpress) | WordPress | Web UI |
 | [`cli_import_wordpress.php`](#wordpress) | WordPress | Command line |
+| [`import_ghost.php`](#ghost) | Ghost | Web UI |
 | [`import_bearblog.php`](#bearblog) | BearBlog | Web UI |
 | [`import_pagecord.php`](#pagecord) | Pagecord | Web UI |
 
@@ -22,6 +23,16 @@ Two versions are available. Both require a WordPress WXR export file (`.xml`), o
 **Command line** (`cli_import_wordpress.php`) — useful for fresh installs before Pure Blog is running, or if you prefer the terminal. Supports `--drafts`, `--no-pages`, `--no-images`, `--uploads-dir`, and `--dry-run`.
 
 [Full WordPress importer docs →](https://pureblog.org/wordpress-importer)
+
+---
+
+## Ghost
+
+Web UI importer for Ghost JSON exports. Obtained from **Settings → Labs → Export your content** in your Ghost admin.
+
+**Web UI** (`import_ghost.php`) — drop into your Pure Blog root, visit the URL while logged in, and follow the three-step wizard. Handles posts, pages, tags, feature/inline images, and SEO descriptions. Supports relative path resolution, copying local assets, or downloading from the live site.
+
+[Full Ghost importer docs →](https://pureblog.org/ghost-importer)
 
 ---
 

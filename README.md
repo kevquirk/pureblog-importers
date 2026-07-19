@@ -1,6 +1,6 @@
 # Pure Blog Importers
 
-A collection of import tools for [Pure Blog](https://codeberg.org/kevquirk/pureblog).
+A collection of import tools for [Pure Blog](https://github.com/kevquirk/pureblog).
 
 | File | Source | Interface |
 |---|---|---|

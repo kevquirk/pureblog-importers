@@ -211,7 +211,7 @@ require __DIR__ . '/includes/admin-head.php';
 
         <p class="notice">Note: Pagecord does not distinguish posts from pages. Check your dashboard and delete anything that should not be a post.</p>
 
-        <p><a href="<?= base_path() ?>/admin/dashboard.php">← Back to dashboard</a></p>
+        <p><a class="button" href="<?= base_path() ?>/admin/dashboard.php">← Back to dashboard</a></p>
 
         <form method="post" onsubmit="return confirm('Delete this importer file from the server?')">
             <?= csrf_field() ?>
@@ -261,9 +261,9 @@ require __DIR__ . '/includes/admin-head.php';
                 </label>
             </fieldset>
 
-            <button type="submit" onclick="this.disabled=true; this.textContent='Importing…'; this.form.submit();">
+            <p><button type="submit" onclick="this.disabled=true; this.textContent='Importing…'; this.form.submit();">
                 Import <?= $total ?> post<?= $total !== 1 ? 's' : '' ?>
-            </button>
+            </button></p>
         </form>
 
         <details>

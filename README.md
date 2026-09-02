@@ -9,6 +9,7 @@ A collection of import tools for [Pure Blog](https://github.com/kevquirk/pureblo
 | [`import_ghost.php`](#ghost) | Ghost | Web UI |
 | [`import_bearblog.php`](#bearblog) | BearBlog | Web UI |
 | [`import_pagecord.php`](#pagecord) | Pagecord | Web UI |
+| [`import_writefreely.php`](#writefreely) | WriteFreely | Web UI |
 
 Full usage instructions for each importer are on [pureblog.org](https://pureblog.org/pure-blog-importers).
 
@@ -53,6 +54,14 @@ Web UI importer for Pagecord Markdown exports. Export your posts from Pagecord, 
 *Original concept by [David (justdaj)](https://github.com/justdaj).*
 
 [Full Pagecord importer docs →](https://pureblog.org/pagecord-importer)
+
+---
+
+## WriteFreely
+
+Web UI importer for WriteFreely CSV exports. Export your posts from WriteFreely (**Customize → Export data → Posts (.csv)**), drop `import_writefreely.php` into your Pure Blog root, upload or place the CSV in `content/posts/import/`, and run the importer. Preserves titles, slugs, publish dates, markdown formatting, extracts hashtags into tags, and flags posts containing images as drafts (with an option to force-publish).
+
+[Full WriteFreely importer docs →](https://pureblog.org/writefreely-importer)
 
 ---
 

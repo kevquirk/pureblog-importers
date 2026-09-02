@@ -210,12 +210,12 @@ require __DIR__ . '/includes/admin-head.php';
             </ul>
         </details>
 
-        <p><a href="<?= base_path() ?>/admin/dashboard.php">← Back to dashboard</a></p>
+        <p><a class="button" href="<?= base_path() ?>/admin/dashboard.php">← Back to dashboard</a></p>
 
         <form method="post" onsubmit="return confirm('Delete this importer file from the server?')">
             <?= csrf_field() ?>
             <input type="hidden" name="action" value="cleanup">
-            <button type="submit" class="delete">Delete importer file and go to dashboard</button>
+            <p><button type="submit" class="delete">Delete importer file and go to dashboard</button></p>
         </form>
 
 
@@ -264,10 +264,10 @@ require __DIR__ . '/includes/admin-head.php';
                 </label>
             </fieldset>
 
-            <button type="submit" onclick="this.disabled=true; this.textContent='Importing…'; this.form.submit();">
+            <p><button type="submit" onclick="this.disabled=true; this.textContent='Importing…'; this.form.submit();">
                 Import <?= count($preview) - count($pages) ?> post<?= (count($preview) - count($pages)) !== 1 ? 's' : '' ?>
             </button>
-            <a href="<?= base_path() ?>/import_bearblog.php">Start over</a>
+            <a class="button delete" href="<?= base_path() ?>/import_bearblog.php">Start over</a></p>
         </form>
 
         <details>
@@ -301,7 +301,7 @@ require __DIR__ . '/includes/admin-head.php';
         <form method="post">
             <?= csrf_field() ?>
             <input type="hidden" name="action" value="preview">
-            <button type="submit">Preview Import</button>
+            <p><button type="submit">Preview Import</button></p>
         </form>
 
     <?php endif; ?>

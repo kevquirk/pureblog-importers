@@ -250,6 +250,10 @@ function wf_read_csv(string $csv_path): ?array
         $created   = ($created_idx !== false && isset($row[$created_idx])) ? trim((string) $row[$created_idx]) : '';
         $id        = ($id_idx !== false && isset($row[$id_idx])) ? trim((string) $row[$id_idx]) : '';
 
+        // Unescape literal newlines encoded by WriteFreely in CSV exports
+        $body      = str_replace(["\\r\\n", "\\r", "\\n"], "\n", $body);
+        $raw_title = str_replace(["\\r\\n", "\\r", "\\n"], " ", $raw_title);
+
         // If title is empty, check if first line of body is a markdown heading
         $title = $raw_title;
         if ($title === '') {

@@ -7,6 +7,7 @@
 
 ## Fixed
 - Added classes and wrapped buttons in `p` tags to improve UI.
+- Unescaped literal `\n` line breaks in WriteFreely CSV post bodies and titles so paragraphs, Markdown tables, and lists format correctly.
 
 ---
 

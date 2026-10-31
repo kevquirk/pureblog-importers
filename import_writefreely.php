@@ -29,6 +29,11 @@ $error   = '';
 $preview = null;
 $results = null;
 
+if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && empty($_POST) && empty($_FILES) && (int) ($_SERVER['CONTENT_LENGTH'] ?? 0) > 0) {
+    $limit = ini_get('post_max_size');
+    $error = "The uploaded file exceeds the server's maximum POST size ({$limit}). Enter the file path on the server in the field below instead.";
+}
+
 // ─── Action: Preview ──────────────────────────────────────────────────────────
 
 if ($action === 'preview') {
@@ -105,21 +110,9 @@ function resolve_wf_path(): ?string
     }
 
     // 2. Check path provided in text field
-    $path = trim($_POST['wf_path'] ?? '');
-    if ($path !== '') {
-        if (file_exists($path) && is_readable($path)) {
-            return $path;
-        }
-        $relative = __DIR__ . '/' . ltrim($path, '/');
-        if (file_exists($relative) && is_readable($relative)) {
-            return $relative;
-        }
-        if (defined('PUREBLOG_BASE_PATH')) {
-            $base_rel = rtrim(PUREBLOG_BASE_PATH, '/') . '/' . ltrim($path, '/');
-            if (file_exists($base_rel) && is_readable($base_rel)) {
-                return $base_rel;
-            }
-        }
+    $path = validate_temp_path(trim($_POST['wf_path'] ?? ''));
+    if ($path !== null && is_readable($path)) {
+        return $path;
     }
 
     // 3. Auto-detect CSV in content/posts/import/
@@ -140,21 +133,28 @@ function validate_temp_path(string $path): ?string
 {
     if ($path === '') return null;
 
+    if (str_starts_with($path, '~/')) {
+        $home = getenv('HOME') ?: ($_SERVER['HOME'] ?? '');
+        if ($home !== '') {
+            $path = rtrim($home, '/') . substr($path, 1);
+        }
+    }
+
     $real = realpath($path);
-    if ($real !== false && file_exists($real)) {
+    if ($real !== false && is_file($real)) {
         return $real;
     }
 
     $relative = __DIR__ . '/' . ltrim($path, '/');
     $real = realpath($relative);
-    if ($real !== false && file_exists($real)) {
+    if ($real !== false && is_file($real)) {
         return $real;
     }
 
     if (defined('PUREBLOG_BASE_PATH')) {
         $base_rel = rtrim(PUREBLOG_BASE_PATH, '/') . '/' . ltrim($path, '/');
         $real = realpath($base_rel);
-        if ($real !== false && file_exists($real)) {
+        if ($real !== false && is_file($real)) {
             return $real;
         }
     }
@@ -318,10 +318,15 @@ function do_wf_import(string $csv_path, array $opts): array
         return ['error' => 'Could not parse WriteFreely CSV file.'];
     }
 
-    $posts = $parsed['posts'];
-    $imported = [];
+    $config      = load_config();
+    $used_slugs  = wf_get_existing_slugs();
+    $seen_in_run = [];
+    $posts       = $parsed['posts'];
+    $imported    = [];
 
     foreach ($posts as $post) {
+        @set_time_limit(60);
+
         $status = 'published';
 
         if ($opts['all_drafts']) {
@@ -343,7 +348,7 @@ function do_wf_import(string $csv_path, array $opts): array
         ];
 
         $save_error = null;
-        $ok = save_post($save_data, null, null, null, $save_error);
+        $ok = wf_save_post_fast($save_data, $used_slugs, $seen_in_run, $config, $save_error);
 
         $note = '';
         if ($status === 'draft') {
@@ -364,9 +369,96 @@ function do_wf_import(string $csv_path, array $opts): array
         ];
     }
 
+    if (!empty($imported)) {
+        build_search_index();
+        build_tag_index();
+        cache_clear();
+    }
+
     return [
         'imported' => $imported,
     ];
+}
+
+function wf_get_existing_slugs(): array
+{
+    $used = [];
+    foreach (get_all_posts_meta(true, true) as $p) {
+        if (($p['slug'] ?? '') !== '' && ($p['path'] ?? '') !== '') {
+            $used[$p['slug']] = $p['path'];
+        }
+    }
+    foreach (get_all_pages(true, true) as $p) {
+        if (($p['slug'] ?? '') !== '' && ($p['path'] ?? '') !== '') {
+            $used[$p['slug']] = $p['path'];
+        }
+    }
+    return $used;
+}
+
+function wf_save_post_fast(array &$post, array &$used_slugs, array &$seen_in_run, array $config, ?string &$error = null): bool
+{
+    $error       = null;
+    $title       = trim($post['title'] ?? '');
+    $slug        = trim($post['slug'] ?? '');
+    $date        = trim($post['date'] ?? '');
+    $status      = trim($post['status'] ?? 'draft');
+    $tags        = $post['tags'] ?? [];
+    $content     = str_replace("\r", '', $post['content'] ?? '');
+    $description = trim($post['description'] ?? '');
+
+    $slug = slugify($slug === '' ? $title : $slug);
+    if ($slug === '') {
+        $slug = wf_slugify($title);
+    }
+
+    if ($date === '') {
+        $date = current_site_datetime_for_storage($config);
+    }
+
+    $date_prefix = format_datetime_for_display($date, $config, 'Y-m-d');
+    if ($date_prefix === '') {
+        $date_prefix = format_datetime_for_display(current_site_datetime_for_storage($config), $config, 'Y-m-d');
+    }
+
+    $base_slug = $slug;
+    $suffix    = 2;
+    while (
+        isset($used_slugs[$slug])
+        && ($used_slugs[$slug] !== PUREBLOG_POSTS_PATH . '/' . $date_prefix . '-' . $slug . '.md' || isset($seen_in_run[$slug]))
+    ) {
+        $slug = $base_slug . '-' . $suffix;
+        $suffix++;
+    }
+    $post['slug'] = $slug;
+
+    $filename = $date_prefix . '-' . $slug . '.md';
+    $path     = PUREBLOG_POSTS_PATH . '/' . $filename;
+
+    $frontMatter = [
+        'title'       => $title,
+        'slug'        => $slug,
+        'date'        => $date,
+        'status'      => $status,
+        'tags'        => $tags,
+        'description' => $description,
+    ];
+
+    $frontLines = _build_front_matter_lines($frontMatter);
+    $body       = implode("\n", $frontLines) . "\n\n" . ltrim($content) . "\n";
+
+    if (!is_dir(PUREBLOG_POSTS_PATH)) {
+        mkdir(PUREBLOG_POSTS_PATH, 0755, true);
+    }
+
+    if (file_put_contents($path, $body) === false) {
+        $error = 'Unable to write post file.';
+        return false;
+    }
+
+    $used_slugs[$slug]  = $path;
+    $seen_in_run[$slug] = true;
+    return true;
 }
 
 // ─── Output ───────────────────────────────────────────────────────────────────

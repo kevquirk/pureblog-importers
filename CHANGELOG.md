@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.0
+
+### Fixed
+- Optimised web importers (`import_wordpress.php`, `import_ghost.php`, `import_bearblog.php`, `import_writefreely.php`, and `import_pagecord.php`) to rebuild the search and tag indexes once at the end of the import instead of after every post, preventing timeouts on large imports. Also added a 10-second timeout for remote image downloads and made re-runs overwrite existing post files from interrupted imports rather than duplicating them. Thanks to [@dnkrupinski](https://github.com/dnkrupinski) for reporting this in [pureblog#101](https://github.com/kevquirk/pureblog/issues/101).
+
+---
+
 ## 1.1.1
 
 ### Added

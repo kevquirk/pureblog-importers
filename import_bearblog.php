@@ -17,6 +17,9 @@
 
 declare(strict_types=1);
 
+@ini_set('max_execution_time', '300');
+@ini_set('memory_limit', '256M');
+
 require __DIR__ . '/functions.php';
 require_setup_redirect();
 start_admin_session();
@@ -115,10 +118,15 @@ function get_bear_posts(): array
 
 function do_bear_import(array $posts, bool $force_images, bool $delete_files): array
 {
-    $imported = [];
-    $skipped  = [];
+    $config      = load_config();
+    $used_slugs  = bear_get_existing_slugs();
+    $seen_in_run = [];
+    $imported    = [];
+    $skipped     = [];
 
     foreach ($posts as $post) {
+        @set_time_limit(60);
+
         if ($post['is_page']) {
             $skipped[] = $post['title'];
             continue;
@@ -140,7 +148,7 @@ function do_bear_import(array $posts, bool $force_images, bool $delete_files): a
         ];
 
         $save_error = null;
-        $ok = save_post($save_data, null, null, null, $save_error);
+        $ok = bear_save_post_fast($save_data, $used_slugs, $seen_in_run, $config, $save_error);
 
         $imported[] = [
             'title'  => $post['title'],
@@ -150,12 +158,99 @@ function do_bear_import(array $posts, bool $force_images, bool $delete_files): a
             'error'  => $save_error,
         ];
 
-        if ($delete_files) {
+        if ($delete_files && $ok) {
             @unlink($post['path']);
         }
     }
 
+    if (!empty($imported)) {
+        build_search_index();
+        build_tag_index();
+        cache_clear();
+    }
+
     return ['imported' => $imported, 'skipped' => $skipped];
+}
+
+function bear_get_existing_slugs(): array
+{
+    $used = [];
+    foreach (get_all_posts_meta(true, true) as $p) {
+        if (($p['slug'] ?? '') !== '' && ($p['path'] ?? '') !== '') {
+            $used[$p['slug']] = $p['path'];
+        }
+    }
+    foreach (get_all_pages(true, true) as $p) {
+        if (($p['slug'] ?? '') !== '' && ($p['path'] ?? '') !== '') {
+            $used[$p['slug']] = $p['path'];
+        }
+    }
+    return $used;
+}
+
+function bear_save_post_fast(array &$post, array &$used_slugs, array &$seen_in_run, array $config, ?string &$error = null): bool
+{
+    $error       = null;
+    $title       = trim($post['title'] ?? '');
+    $slug        = trim($post['slug'] ?? '');
+    $date        = trim($post['date'] ?? '');
+    $status      = trim($post['status'] ?? 'draft');
+    $tags        = $post['tags'] ?? [];
+    $content     = str_replace("\r", '', $post['content'] ?? '');
+    $description = trim($post['description'] ?? '');
+
+    $slug = slugify($slug === '' ? $title : $slug);
+    if ($slug === '') {
+        $slug = 'untitled';
+    }
+
+    if ($date === '') {
+        $date = current_site_datetime_for_storage($config);
+    }
+
+    $date_prefix = format_datetime_for_display($date, $config, 'Y-m-d');
+    if ($date_prefix === '') {
+        $date_prefix = format_datetime_for_display(current_site_datetime_for_storage($config), $config, 'Y-m-d');
+    }
+
+    $base_slug = $slug;
+    $suffix    = 2;
+    while (
+        isset($used_slugs[$slug])
+        && ($used_slugs[$slug] !== PUREBLOG_POSTS_PATH . '/' . $date_prefix . '-' . $slug . '.md' || isset($seen_in_run[$slug]))
+    ) {
+        $slug = $base_slug . '-' . $suffix;
+        $suffix++;
+    }
+    $post['slug'] = $slug;
+
+    $filename = $date_prefix . '-' . $slug . '.md';
+    $path     = PUREBLOG_POSTS_PATH . '/' . $filename;
+
+    $frontMatter = [
+        'title'       => $title,
+        'slug'        => $slug,
+        'date'        => $date,
+        'status'      => $status,
+        'tags'        => $tags,
+        'description' => $description,
+    ];
+
+    $frontLines = _build_front_matter_lines($frontMatter);
+    $body       = implode("\n", $frontLines) . "\n\n" . ltrim($content) . "\n";
+
+    if (!is_dir(PUREBLOG_POSTS_PATH)) {
+        mkdir(PUREBLOG_POSTS_PATH, 0755, true);
+    }
+
+    if (file_put_contents($path, $body) === false) {
+        $error = 'Unable to write post file.';
+        return false;
+    }
+
+    $used_slugs[$slug]  = $path;
+    $seen_in_run[$slug] = true;
+    return true;
 }
 
 

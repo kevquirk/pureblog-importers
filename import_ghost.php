@@ -12,6 +12,7 @@ declare(strict_types=1);
 
 @ini_set('max_execution_time', '300');
 @ini_set('memory_limit', '256M');
+@ini_set('default_socket_timeout', '5');
 
 define('GHOST_IMPORTER_VERSION', '1.0.0');
 
@@ -28,6 +29,11 @@ $action = $_POST['action'] ?? '';
 $error  = '';
 $preview = null;
 $results = null;
+
+if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && empty($_POST) && empty($_FILES) && (int) ($_SERVER['CONTENT_LENGTH'] ?? 0) > 0) {
+    $limit = ini_get('post_max_size');
+    $error = "The uploaded file exceeds the server's maximum POST size ({$limit}). Enter the file path on the server in the field below instead.";
+}
 
 // ─── Action: Preview ──────────────────────────────────────────────────────────
 
@@ -106,24 +112,9 @@ function resolve_ghost_path(): ?string
     }
 
     // Fall back to server path
-    $path = trim($_POST['ghost_path'] ?? '');
-    if ($path !== '') {
-        // Try literal path
-        if (file_exists($path) && is_readable($path)) {
-            return $path;
-        }
-        // Try relative to current script directory (__DIR__)
-        $relative = __DIR__ . '/' . ltrim($path, '/');
-        if (file_exists($relative) && is_readable($relative)) {
-            return $relative;
-        }
-        // Try relative to PUREBLOG_BASE_PATH if defined
-        if (defined('PUREBLOG_BASE_PATH')) {
-            $base_rel = rtrim(PUREBLOG_BASE_PATH, '/') . '/' . ltrim($path, '/');
-            if (file_exists($base_rel) && is_readable($base_rel)) {
-                return $base_rel;
-            }
-        }
+    $path = validate_temp_path(trim($_POST['ghost_path'] ?? ''));
+    if ($path !== null && is_readable($path)) {
+        return $path;
     }
 
     return null;
@@ -132,17 +123,24 @@ function resolve_ghost_path(): ?string
 function validate_temp_path(string $path): ?string
 {
     if ($path === '') return null;
+
+    if (str_starts_with($path, '~/')) {
+        $home = getenv('HOME') ?: ($_SERVER['HOME'] ?? '');
+        if ($home !== '') {
+            $path = rtrim($home, '/') . substr($path, 1);
+        }
+    }
     
     // Try literal path
     $real = realpath($path);
-    if ($real !== false && file_exists($real)) {
+    if ($real !== false && is_file($real)) {
         return $real;
     }
     
     // Try relative to current script directory (__DIR__)
     $relative = __DIR__ . '/' . ltrim($path, '/');
     $real = realpath($relative);
-    if ($real !== false && file_exists($real)) {
+    if ($real !== false && is_file($real)) {
         return $real;
     }
 
@@ -150,7 +148,7 @@ function validate_temp_path(string $path): ?string
     if (defined('PUREBLOG_BASE_PATH')) {
         $base_rel = rtrim(PUREBLOG_BASE_PATH, '/') . '/' . ltrim($path, '/');
         $real = realpath($base_rel);
-        if ($real !== false && file_exists($real)) {
+        if ($real !== false && is_file($real)) {
             return $real;
         }
     }
@@ -218,10 +216,13 @@ function do_import(string $ghost_path, array $opts): array
         return ['error' => 'Could not parse Ghost file or posts are missing.'];
     }
 
-    $db_data = $data['db'][0]['data'];
-    $images_dir  = PUREBLOG_CONTENT_IMAGES_PATH;
-    $imported    = [];
-    $skipped     = 0;
+    $config       = load_config();
+    $used_slugs   = ghost_get_existing_slugs();
+    $seen_in_run  = [];
+    $db_data      = $data['db'][0]['data'];
+    $images_dir   = PUREBLOG_CONTENT_IMAGES_PATH;
+    $imported     = [];
+    $skipped      = 0;
     $image_errors = [];
 
     // Map tags
@@ -252,6 +253,8 @@ function do_import(string $ghost_path, array $opts): array
     }
 
     foreach ($db_data['posts'] as $p) {
+        @set_time_limit(60);
+
         $type = $p['type'] ?? 'post';
         if (!in_array($type, ['post', 'page'])) continue;
         if ($type === 'page' && $opts['skip_pages']) continue;
@@ -264,8 +267,9 @@ function do_import(string $ghost_path, array $opts): array
             continue;
         }
 
-        $title = $p['title'] ?? 'Untitled';
-        $slug  = $p['slug'] ?? '';
+        $title    = $p['title'] ?? 'Untitled';
+        $raw_slug = trim($p['slug'] ?? '');
+        $slug     = slugify($raw_slug === '' ? $title : $raw_slug);
         if ($slug === '') {
             $slug = ghost_slugify($title);
         }
@@ -275,6 +279,28 @@ function do_import(string $ghost_path, array $opts): array
             $datetime = (new DateTimeImmutable($date))->format('Y-m-d H:i');
         } catch (\Exception $e) {
             $datetime = date('Y-m-d H:i');
+        }
+
+        $date_prefix = format_datetime_for_display($datetime, $config, 'Y-m-d');
+        if ($date_prefix === '') {
+            $date_prefix = format_datetime_for_display(current_site_datetime_for_storage($config), $config, 'Y-m-d');
+        }
+
+        $base_slug = $slug;
+        $suffix    = 2;
+        if ($type === 'page') {
+            while (isset($used_slugs[$slug])) {
+                $slug = $base_slug . '-' . $suffix;
+                $suffix++;
+            }
+        } else {
+            while (
+                isset($used_slugs[$slug])
+                && ($used_slugs[$slug] !== PUREBLOG_POSTS_PATH . '/' . $date_prefix . '-' . $slug . '.md' || isset($seen_in_run[$slug]))
+            ) {
+                $slug = $base_slug . '-' . $suffix;
+                $suffix++;
+            }
         }
 
         $raw_html = $p['html'] ?? '';
@@ -301,6 +327,7 @@ function do_import(string $ghost_path, array $opts): array
             'title'       => $title,
             'slug'        => $slug,
             'date'        => $datetime,
+            'date_prefix' => $date_prefix,
             'status'      => $pb_status,
             'tags'        => $tags,
             'description' => $description,
@@ -313,8 +340,8 @@ function do_import(string $ghost_path, array $opts): array
 
         $saveError = null;
         $ok = ($type === 'page')
-            ? save_page($post, null, null, $saveError)
-            : save_post($post, null, null, null, $saveError);
+            ? ghost_save_page_fast($post, $used_slugs, $seen_in_run, $saveError)
+            : ghost_save_post_fast($post, $used_slugs, $seen_in_run, $saveError);
 
         $imported[] = [
             'title'  => $title,
@@ -323,6 +350,13 @@ function do_import(string $ghost_path, array $opts): array
             'ok'     => $ok,
             'error'  => $saveError,
         ];
+    }
+
+    if (!empty($imported)) {
+        get_all_pages(true, true);
+        build_search_index();
+        build_tag_index();
+        cache_clear();
     }
 
     // Write image error log if needed
@@ -343,6 +377,110 @@ function do_import(string $ghost_path, array $opts): array
         'image_errors' => $image_errors,
         'log_path'     => $log_path,
     ];
+}
+
+function ghost_get_existing_slugs(): array
+{
+    $used = [];
+    foreach (get_all_posts_meta(true, true) as $p) {
+        if (($p['slug'] ?? '') !== '' && ($p['path'] ?? '') !== '') {
+            $used[$p['slug']] = $p['path'];
+        }
+    }
+    foreach (get_all_pages(true, true) as $p) {
+        if (($p['slug'] ?? '') !== '' && ($p['path'] ?? '') !== '') {
+            $used[$p['slug']] = $p['path'];
+        }
+    }
+    return $used;
+}
+
+function ghost_save_post_fast(array $post, array &$used_slugs, array &$seen_in_run, ?string &$error = null): bool
+{
+    $error         = null;
+    $title         = trim($post['title'] ?? '');
+    $slug          = trim($post['slug'] ?? '');
+    $date          = trim($post['date'] ?? '');
+    $date_prefix   = trim($post['date_prefix'] ?? '');
+    $status        = trim($post['status'] ?? 'draft');
+    $tags          = $post['tags'] ?? [];
+    $content       = str_replace("\r", '', $post['content'] ?? '');
+    $description   = trim($post['description'] ?? '');
+    $feature_image = trim($post['feature_image'] ?? '');
+
+    $filename = $date_prefix . '-' . $slug . '.md';
+    $path     = PUREBLOG_POSTS_PATH . '/' . $filename;
+
+    $frontMatter = [
+        'title'       => $title,
+        'slug'        => $slug,
+        'date'        => $date,
+        'status'      => $status,
+        'tags'        => $tags,
+        'description' => $description,
+    ];
+
+    if ($feature_image !== '') {
+        $frontMatter['feature_image'] = $feature_image;
+    }
+
+    $frontLines = _build_front_matter_lines($frontMatter);
+    $body       = implode("\n", $frontLines) . "\n\n" . ltrim($content) . "\n";
+
+    if (!is_dir(PUREBLOG_POSTS_PATH)) {
+        mkdir(PUREBLOG_POSTS_PATH, 0755, true);
+    }
+
+    if (file_put_contents($path, $body) === false) {
+        $error = 'Unable to write post file.';
+        return false;
+    }
+
+    $used_slugs[$slug]  = $path;
+    $seen_in_run[$slug] = true;
+    return true;
+}
+
+function ghost_save_page_fast(array $page, array &$used_slugs, array &$seen_in_run, ?string &$error = null): bool
+{
+    $error         = null;
+    $title         = trim($page['title'] ?? '');
+    $slug          = trim($page['slug'] ?? '');
+    $status        = trim($page['status'] ?? 'draft');
+    $description   = trim($page['description'] ?? '');
+    $content       = str_replace("\r", '', $page['content'] ?? '');
+    $feature_image = trim($page['feature_image'] ?? '');
+
+    $filename = $slug . '.md';
+    $path     = PUREBLOG_PAGES_PATH . '/' . $filename;
+
+    $frontMatter = [
+        'title'          => $title,
+        'slug'           => $slug,
+        'status'         => $status,
+        'description'    => $description,
+        'include_in_nav' => 'true',
+    ];
+
+    if ($feature_image !== '') {
+        $frontMatter['feature_image'] = $feature_image;
+    }
+
+    $frontLines = _build_front_matter_lines($frontMatter);
+    $body       = implode("\n", $frontLines) . "\n\n" . ltrim($content) . "\n";
+
+    if (!is_dir(PUREBLOG_PAGES_PATH)) {
+        mkdir(PUREBLOG_PAGES_PATH, 0755, true);
+    }
+
+    if (file_put_contents($path, $body) === false) {
+        $error = 'Unable to write page file.';
+        return false;
+    }
+
+    $used_slugs[$slug]  = $path;
+    $seen_in_run[$slug] = true;
+    return true;
 }
 
 // ─── Content Processing ───────────────────────────────────────────────────────
@@ -416,12 +554,7 @@ function ghost_handle_feature_image(string $url, string $slug, string $images_di
         if ($source !== null && file_exists($source)) {
             $ok = copy($source, $local_path);
         } elseif ($download_url !== null) {
-            $ctx  = stream_context_create(['http' => ['user_agent' => 'PureBlog-Ghost-Importer/' . GHOST_IMPORTER_VERSION]]);
-            $data = @file_get_contents($download_url, false, $ctx);
-            if ($data !== false) {
-                file_put_contents($local_path, $data);
-                $ok = true;
-            }
+            $ok = ghost_download_image($download_url, $local_path);
         }
 
         if (!$ok) {
@@ -490,12 +623,7 @@ function ghost_handle_images(string $html, string $slug, string $images_dir, ?st
                 if ($source !== null && file_exists($source)) {
                     $ok = copy($source, $local_path);
                 } elseif ($download_url !== null) {
-                    $ctx  = stream_context_create(['http' => ['user_agent' => 'PureBlog-Ghost-Importer/' . GHOST_IMPORTER_VERSION]]);
-                    $data = @file_get_contents($download_url, false, $ctx);
-                    if ($data !== false) {
-                        file_put_contents($local_path, $data);
-                        $ok = true;
-                    }
+                    $ok = ghost_download_image($download_url, $local_path);
                 }
 
                 if (!$ok) {
@@ -508,6 +636,79 @@ function ghost_handle_images(string $html, string $slug, string $images_dir, ?st
         },
         $html
     );
+}
+
+function ghost_download_image(string $url, string $dest): bool
+{
+    static $dead_hosts  = [];
+    static $failed_urls = [];
+    static $ch          = null;
+
+    if (isset($failed_urls[$url])) {
+        return false;
+    }
+
+    $host = strtolower((string) (parse_url($url, PHP_URL_HOST) ?? ''));
+    if ($host === '' || isset($dead_hosts[$host])) {
+        return false;
+    }
+
+    if (function_exists('curl_init')) {
+        if ($ch === null) {
+            $ch = curl_init();
+        } else {
+            curl_reset($ch);
+        }
+
+        curl_setopt_array($ch, [
+            CURLOPT_URL            => $url,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_MAXREDIRS      => 5,
+            CURLOPT_CONNECTTIMEOUT => 3,
+            CURLOPT_TIMEOUT        => 10,
+            CURLOPT_USERAGENT      => 'PureBlog-Ghost-Importer/' . GHOST_IMPORTER_VERSION,
+        ]);
+
+        $data         = curl_exec($ch);
+        $errno        = curl_errno($ch);
+        $status       = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+        $connect_time = (float) curl_getinfo($ch, CURLINFO_CONNECT_TIME);
+
+        if (
+            $errno === CURLE_COULDNT_RESOLVE_HOST
+            || $errno === CURLE_COULDNT_CONNECT
+            || ($errno === CURLE_OPERATION_TIMEDOUT && $connect_time === 0.0)
+        ) {
+            $dead_hosts[$host] = true;
+            $failed_urls[$url] = true;
+            return false;
+        }
+
+        if (!is_string($data) || $data === '' || $status < 200 || $status >= 300) {
+            $failed_urls[$url] = true;
+            return false;
+        }
+
+        return file_put_contents($dest, $data) !== false;
+    }
+
+    $ctx = stream_context_create([
+        'http' => [
+            'user_agent' => 'PureBlog-Ghost-Importer/' . GHOST_IMPORTER_VERSION,
+            'timeout'    => 5,
+        ],
+    ]);
+    $data = @file_get_contents($url, false, $ctx);
+    if ($data === false) {
+        if (empty($http_response_header)) {
+            $dead_hosts[$host] = true;
+        }
+        $failed_urls[$url] = true;
+        return false;
+    }
+
+    return file_put_contents($dest, $data) !== false;
 }
 
 // ─── HTML → Markdown ──────────────────────────────────────────────────────────

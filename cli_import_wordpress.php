@@ -280,12 +280,7 @@ function download_and_rewrite_images(string $html, string $slug, string $images_
                         $ok       = file_exists($source) && copy($source, $local_path);
                     } else {
                         // HTTP download
-                        $ctx  = stream_context_create(['http' => ['user_agent' => 'PureBlog-WP-Importer/' . IMPORTER_VERSION]]);
-                        $data = @file_get_contents($url, false, $ctx);
-                        if ($data !== false) {
-                            file_put_contents($local_path, $data);
-                            $ok = true;
-                        }
+                        $ok = download_image($url, $local_path);
                     }
 
                     if (!$ok) {
@@ -301,6 +296,79 @@ function download_and_rewrite_images(string $html, string $slug, string $images_
         },
         $html
     );
+}
+
+function download_image(string $url, string $dest): bool
+{
+    static $dead_hosts  = [];
+    static $failed_urls = [];
+    static $ch          = null;
+
+    if (isset($failed_urls[$url])) {
+        return false;
+    }
+
+    $host = strtolower((string) (parse_url($url, PHP_URL_HOST) ?? ''));
+    if ($host === '' || isset($dead_hosts[$host])) {
+        return false;
+    }
+
+    if (function_exists('curl_init')) {
+        if ($ch === null) {
+            $ch = curl_init();
+        } else {
+            curl_reset($ch);
+        }
+
+        curl_setopt_array($ch, [
+            CURLOPT_URL            => $url,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_MAXREDIRS      => 5,
+            CURLOPT_CONNECTTIMEOUT => 3,
+            CURLOPT_TIMEOUT        => 10,
+            CURLOPT_USERAGENT      => 'PureBlog-WP-Importer/' . IMPORTER_VERSION,
+        ]);
+
+        $data         = curl_exec($ch);
+        $errno        = curl_errno($ch);
+        $status       = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+        $connect_time = (float) curl_getinfo($ch, CURLINFO_CONNECT_TIME);
+
+        if (
+            $errno === CURLE_COULDNT_RESOLVE_HOST
+            || $errno === CURLE_COULDNT_CONNECT
+            || ($errno === CURLE_OPERATION_TIMEDOUT && $connect_time === 0.0)
+        ) {
+            $dead_hosts[$host] = true;
+            $failed_urls[$url] = true;
+            return false;
+        }
+
+        if (!is_string($data) || $data === '' || $status < 200 || $status >= 300) {
+            $failed_urls[$url] = true;
+            return false;
+        }
+
+        return file_put_contents($dest, $data) !== false;
+    }
+
+    $ctx = stream_context_create([
+        'http' => [
+            'user_agent' => 'PureBlog-WP-Importer/' . IMPORTER_VERSION,
+            'timeout'    => 5,
+        ],
+    ]);
+    $data = @file_get_contents($url, false, $ctx);
+    if ($data === false) {
+        if (empty($http_response_header)) {
+            $dead_hosts[$host] = true;
+        }
+        $failed_urls[$url] = true;
+        return false;
+    }
+
+    return file_put_contents($dest, $data) !== false;
 }
 
 
